@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"crypto/rand"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"math/big"
+	"net/rpc"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,17 +27,54 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
+var p = fmt.Println
+
+var nTask NumsTaskReplay
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+
+	args := EmptyAges{}
+	nTask = NumsTaskReplay{}
+	call("Coordinator.Numtask", &args, &nTask)
+	p(nTask)
+
+	for {
+		taskReply := AskTaskReply{}
+		call("Coordinator.AskATask", &args, &taskReply)
+
+		if !taskReply.Valid {
+			break
+		}
+
+		max := big.NewInt(1000)
+		rr, _ := rand.Int(rand.Reader, max)
+		if rr.Int64() <= 500 {
+			continue
+		}
+
+		if taskReply.TaskType == MAP {
+
+			p(taskReply, nTask.FileName[taskReply.TaskNum])
+			args := TaskNumAges{taskReply.TaskType, taskReply.TaskNum}
+			emptyArgs := EmptyAges{}
+			call("Coordinator.CommpledAMap", &args, &emptyArgs)
+		} else if taskReply.TaskType == REDUCE {
+			p(taskReply)
+			args := TaskNumAges{taskReply.TaskType, taskReply.TaskNum}
+			emptyArgs := EmptyAges{}
+			call("Coordinator.CommpledAMap", &args, &emptyArgs)
+		} else {
+			fmt.Println("error ")
+		}
+	}
 
 }
 
