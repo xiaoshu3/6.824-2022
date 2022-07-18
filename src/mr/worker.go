@@ -40,7 +40,7 @@ func ihash(key string) int {
 //
 // main/mrworker.go calls this function.
 //
-var p = fmt.Println
+// var p = fmt.Println
 
 var nTask NumsTaskReplay
 
