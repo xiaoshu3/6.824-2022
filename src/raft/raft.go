@@ -272,7 +272,6 @@ func (rf *Raft) leaderElection() {
 				}
 				if reply.Term > rf.currnetTerm {
 					rf.becomeFollower(reply.Term)
-					rf.heartbeatTime = time.Now()
 					DPrintf("[%d] receive [%d] a vote and beacome follower at term %d\n", rf.me, server, rf.currnetTerm)
 					return
 				}
@@ -356,7 +355,6 @@ func (rf *Raft) leaderSendAppendEntries() {
 					if reply.Term > rf.currnetTerm {
 						DPrintf("[%d] receive a higher term from [%d] at term %d\n", rf.me, server, rf.currnetTerm)
 						rf.becomeFollower(reply.Term)
-						rf.heartbeatTime = time.Now()
 					}
 				} else {
 					DPrintf("[%d] can't receive a append back from [%d]", rf.me, server)
@@ -387,9 +385,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.state = Follower
+	rf.becomeFollower(0)
 	rf.votedFor = -1
-	rf.heartbeatTime = time.Now()
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 

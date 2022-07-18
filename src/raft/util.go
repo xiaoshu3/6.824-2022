@@ -34,6 +34,7 @@ func (rf *Raft) IsRpcExpired(state, term int) bool {
 func (rf *Raft) becomeFollower(term int) {
 	rf.state = Follower
 	rf.currnetTerm = term
+	rf.heartbeatTime = time.Now()
 }
 
 func (rf *Raft) becomeCandidate() {
