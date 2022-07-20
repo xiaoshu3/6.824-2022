@@ -260,7 +260,7 @@ func (rf *Raft) leaderElection() {
 
 			args := RequestVoteArgs{candidateTerm, candidateId}
 			reply := RequestVoteReply{}
-			DPrintf("[%d] send requrst vote to [%d] at term %d\n", rf.me, server, rf.currnetTerm)
+			DPrintf("[%d] send requrst vote to [%d] at term %d\n", rf.me, server, candidateTerm)
 			ok := rf.sendRequestVote(server, &args, &reply)
 			if ok {
 				c.L.Lock()
@@ -277,17 +277,17 @@ func (rf *Raft) leaderElection() {
 				}
 				if reply.VoteGranted {
 					atomic.AddInt32(&numsVote, 1)
-					DPrintf("[%d] got a vote from [%d] and nums vote: %d\n", rf.me, server, numsVote)
+					// DPrintf("[%d] got a vote from [%d] and nums vote: %d\n", rf.me, server, numsVote)
 				}
 			}
 		}(i)
 	}
 
-	for !rf.IsRpcExpired(Candidate, candidateTerm) && numsVote <= (int32(numsPeer/2)) && finished < int32(numsPeer) {
-		DPrintf("[%d] a election term %d finished = %d\n", rf.me, rf.currnetTerm, finished)
+	for !rf.IsRpcExpired(Candidate, candidateTerm) && atomic.LoadInt32(&numsVote) <= (int32(numsPeer/2)) && atomic.LoadInt32(&finished) < int32(numsPeer) {
+		DPrintf("[%d] a election term %d finished = %d\n", rf.me, rf.currnetTerm, atomic.LoadInt32(&finished))
 		c.Wait()
 	}
-	if !rf.IsRpcExpired(Candidate, candidateTerm) && numsVote > (int32(numsPeer/2)) {
+	if !rf.IsRpcExpired(Candidate, candidateTerm) && atomic.LoadInt32(&numsVote) > (int32(numsPeer/2)) {
 		rf.becomeLeader()
 		DPrintf("[%d] become leader at term %d\n", rf.me, rf.currnetTerm)
 	}
@@ -305,7 +305,7 @@ func (rf *Raft) ticker() {
 
 		rf.mu.Lock()
 		if rf.state != Leader {
-			if time.Since(rf.heartbeatTime) >= time.Duration(electionTimeOut)*time.Millisecond {
+			if time.Since(rf.heartbeatTime).Milliseconds() >= int64(electionTimeOut) {
 				rf.becomeCandidate()
 				DPrintf("[%d] attemping election at term %d\n ", rf.me, rf.currnetTerm)
 				go rf.leaderElection()
@@ -342,7 +342,7 @@ func (rf *Raft) leaderSendAppendEntries() {
 				args := AppendEntriesArgs{leaderTerm, leaderId}
 				reply := AppendEntriesReply{}
 
-				DPrintf("[%d] send a Append to [%d] at term %d", rf.me, server, rf.currnetTerm)
+				DPrintf("[%d] send a Append to [%d] at term %d", rf.me, server, leaderTerm)
 				ok := rf.sendAppendEntries(server, &args, &reply)
 
 				rf.mu.Lock()
