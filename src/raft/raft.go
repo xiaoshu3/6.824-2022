@@ -61,6 +61,13 @@ const (
 //
 // A Go object implementing a single Raft peer.
 //
+
+type logEntry struct {
+	Index   int
+	Term    int
+	Command interface{}
+}
+
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -75,8 +82,17 @@ type Raft struct {
 	state       int
 	currnetTerm int
 	votedFor    int
+	log         []logEntry
 
+	applyCond     sync.Cond
 	heartbeatTime time.Time
+
+	commitIndex int
+	lastApplied int
+
+	//leaders
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -209,9 +225,23 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (2B).
+	term, isLeader = rf.GetState()
+	if isLeader {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.state == Leader {
+			lastIndex := len(rf.log)
+			cmd := logEntry{lastIndex, rf.currnetTerm, command}
+			rf.log = append(rf.log, cmd)
+			DPrintf("[%d] append a log %v and now log %v\n", rf.me, cmd, rf.log)
+			index = lastIndex
+		}
+	} else {
+		isLeader = false
+	}
 
 	return index, term, isLeader
 }
@@ -246,6 +276,9 @@ func (rf *Raft) leaderElection() {
 
 	candidateId := rf.me
 	candidateTerm := rf.currnetTerm
+	lastIndex := len(rf.log) - 1
+	lastLogIndex := rf.log[lastIndex].Index
+	lastLogTerm := rf.log[lastIndex].Term
 	var numsVote int32 = 1
 	var finished int32 = 1
 	numsPeer := len(rf.peers)
@@ -258,7 +291,7 @@ func (rf *Raft) leaderElection() {
 		go func(server int) {
 			defer atomic.AddInt32(&finished, 1)
 
-			args := RequestVoteArgs{candidateTerm, candidateId}
+			args := RequestVoteArgs{candidateTerm, candidateId, lastLogIndex, lastLogTerm}
 			reply := RequestVoteReply{}
 			DPrintf("[%d] send requrst vote to [%d] at term %d\n", rf.me, server, candidateTerm)
 			ok := rf.sendRequestVote(server, &args, &reply)
@@ -284,7 +317,7 @@ func (rf *Raft) leaderElection() {
 	}
 
 	for !rf.IsRpcExpired(Candidate, candidateTerm) && atomic.LoadInt32(&numsVote) <= (int32(numsPeer/2)) && atomic.LoadInt32(&finished) < int32(numsPeer) {
-		DPrintf("[%d] a election term %d finished = %d\n", rf.me, rf.currnetTerm, atomic.LoadInt32(&finished))
+		DPrintf("[%d] have a election term %d finished = %d\n", rf.me, rf.currnetTerm, atomic.LoadInt32(&finished))
 		c.Wait()
 	}
 	if !rf.IsRpcExpired(Candidate, candidateTerm) && atomic.LoadInt32(&numsVote) > (int32(numsPeer/2)) {
@@ -316,52 +349,95 @@ func (rf *Raft) ticker() {
 
 }
 
-func (rf *Raft) leaderSendAppendEntries() {
+func (rf *Raft) leaderSendAppendEntries(leaderTerm int) {
 	heartBeatTimeOut := 200
 	for !rf.killed() {
-		rf.mu.Lock()
 
-		if rf.state != Leader {
-			DPrintf("[%d] find it not leader at term %d", rf.me, rf.currnetTerm)
-			rf.mu.Unlock()
-			return
-		}
-
-		rf.heartbeatTime = time.Now()
 		leaderId := rf.me
-		leaderTerm := rf.currnetTerm
 		numsPeer := len(rf.peers)
-		// var finished int32 = 0
-		rf.mu.Unlock()
+
 		for i := 0; i < numsPeer; i++ {
 			if i == leaderId {
 				continue
 			}
 			go func(server int) {
-
-				args := AppendEntriesArgs{leaderTerm, leaderId}
+				args := AppendEntriesArgs{}
 				reply := AppendEntriesReply{}
 
-				DPrintf("[%d] send a Append to [%d] at term %d", rf.me, server, leaderTerm)
+				rf.mu.Lock()
+				rf.getAppendArgs(rf.nextIndex[server], &args)
+				if rf.IsRpcExpired(Leader, leaderTerm) {
+					rf.mu.Unlock()
+					return
+				}
+				rf.mu.Unlock()
+				DPrintf("[%d] send append to [%d]\n", rf.me, server)
 				ok := rf.sendAppendEntries(server, &args, &reply)
 
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
-				if ok {
-					DPrintf("[%d] receive a append back from [%d]", rf.me, server)
+				for !ok || !reply.Success {
+					rf.mu.Lock()
 					if rf.IsRpcExpired(Leader, leaderTerm) {
+						rf.mu.Unlock()
+						return
+					}
+					rf.mu.Unlock()
+
+					if !ok {
+						DPrintf("[%d] send append to [%d] failed\n", rf.me, server)
+						time.Sleep(20 * time.Millisecond)
+						reply = AppendEntriesReply{}
+						ok = rf.sendAppendEntries(server, &args, &reply)
+						continue
+					}
+					rf.mu.Lock()
+					if rf.IsRpcExpired(Leader, leaderTerm) {
+						DPrintf("[%d] find it is not leader\n", rf.me)
+						rf.mu.Unlock()
 						return
 					}
 					if reply.Term > rf.currnetTerm {
 						DPrintf("[%d] receive a higher term from [%d] at term %d\n", rf.me, server, rf.currnetTerm)
 						rf.becomeFollower(reply.Term)
+						rf.mu.Unlock()
+						return
 					}
-				} else {
-					DPrintf("[%d] can't receive a append back from [%d]", rf.me, server)
+
+					DPrintf("[%d] nextIndex become to %d\n", server, rf.nextIndex[server]-1)
+					rf.nextIndex[server]--
+					rf.getAppendArgs(rf.nextIndex[server], &args)
+					rf.mu.Unlock()
+					reply = AppendEntriesReply{}
+					ok = rf.sendAppendEntries(server, &args, &reply)
 				}
+
+				rf.mu.Lock()
+				DPrintf("[%d] send append to [%d] successful\n", rf.me, server)
+				if rf.IsRpcExpired(Leader, leaderTerm) {
+					DPrintf("[%d] find it is not leader\n", rf.me)
+					rf.mu.Unlock()
+					return
+				}
+				DPrintf("after match server:[%d]:  args:%v\n", server, args)
+				rf.matchIndex[server] = max(rf.matchIndex[server], args.PrevLogIndex+len(args.Entries))
+				rf.nextIndex[server] = max(rf.nextIndex[server], rf.matchIndex[server]+1)
+
+				DPrintf("[%d] matchIndex %d,nextIndex %d\n", server, rf.matchIndex[server], rf.nextIndex[server])
+				rf.mu.Unlock()
+
 			}(i)
 		}
-		// rf.mu.Unlock()
+		rf.mu.Lock()
+		if rf.IsRpcExpired(Leader, leaderTerm) {
+			rf.mu.Unlock()
+			return
+		}
+		nowCommit := rf.getMaxCommit()
+		if nowCommit > rf.commitIndex {
+			DPrintf("[%d] update commit %d\n", rf.me, nowCommit)
+			rf.commitIndex = nowCommit
+			rf.applyCond.Signal()
+		}
+		rf.mu.Unlock()
 		time.Sleep(time.Duration(heartBeatTimeOut) * time.Millisecond)
 	}
 }
@@ -385,15 +461,20 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.applyCond = *sync.NewCond(&sync.Mutex{})
 	rf.becomeFollower(0)
 	rf.votedFor = -1
 
+	rf.log = []logEntry{}
+	rf.log = append(rf.log, logEntry{0, -1, nil})
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 
 	go rf.ticker()
-
+	go rf.apply(applyCh)
 	return rf
 }
