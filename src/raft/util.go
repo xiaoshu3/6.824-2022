@@ -101,7 +101,11 @@ func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) {
 	args.LeaderId = rf.me
 	args.PrevLogIndex = rf.log[nextIndex-1].Index
 	args.PrevLogTerm = rf.log[nextIndex-1].Term
-	args.Entries = rf.log[nextIndex:]
+	entry := rf.log[nextIndex:]
+	entryCopy := make([]logEntry, len(entry))
+	copy(entryCopy, entry)
+	// args.Entries = rf.log[nextIndex:]
+	args.Entries = entryCopy
 	args.LeaderCommit = rf.commitIndex
 }
 

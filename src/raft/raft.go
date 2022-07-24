@@ -333,7 +333,7 @@ func (rf *Raft) leaderElection() {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		electionTimeOut := rand.Intn(300) + 400
+		electionTimeOut := rand.Intn(200) + 200
 		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
 
 		rf.mu.Lock()
@@ -350,7 +350,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) leaderSendAppendEntries(leaderTerm int) {
-	heartBeatTimeOut := 200
+	heartBeatTimeOut := 100
 	for !rf.killed() {
 
 		leaderId := rf.me
@@ -390,6 +390,11 @@ func (rf *Raft) leaderSendAppendEntries(leaderTerm int) {
 						continue
 					}
 					rf.mu.Lock()
+					// If no next f.IsRpcExpired it will data race
+					// data race write at rpc.go 126
+					// I think it's not a leader and other leader write it log and rpc read it  since in args log is shared
+					// I decrease heartbeatTime and data race arise
+					// so I pass it by a log copy
 					if rf.IsRpcExpired(Leader, leaderTerm) {
 						DPrintf("[%d] find it is not leader\n", rf.me)
 						rf.mu.Unlock()
