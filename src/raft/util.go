@@ -41,37 +41,49 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 // All have accquired the rf.mu.Lock()
 func (rf *Raft) IsRpcExpired(state, term int) bool {
-	return rf.state != state || rf.currnetTerm != term
+	return rf.state != state || rf.CurrnetTerm != term
 }
 
 func (rf *Raft) becomeFollower(term int) {
 	rf.state = Follower
-	rf.currnetTerm = term
+	rf.CurrnetTerm = term
 	rf.heartbeatTime = time.Now()
 }
 
 func (rf *Raft) becomeCandidate() {
 	rf.state = Candidate
-	rf.currnetTerm++
-	rf.votedFor = rf.me
+	rf.CurrnetTerm++
+	rf.VotedFor = rf.me
 	rf.heartbeatTime = time.Now()
 }
 
 func (rf *Raft) becomeLeader() {
 	rf.state = Leader
-	go rf.leaderSendAppendEntries(rf.currnetTerm)
+	// rf.appandANoOpLog()
+	go rf.leaderSendAppendEntries(rf.CurrnetTerm)
 
-	lenLog := len(rf.log)
+	lenLog := len(rf.Log)
 	for i := 0; i < len(rf.nextIndex); i++ {
 		rf.nextIndex[i] = lenLog
 		rf.matchIndex[i] = 0
 	}
 }
 
+// become Leader first appaand a no-op log
+// can't pass in 2B some tests
+func (rf *Raft) appandANoOpLog() {
+	lastIndex := len(rf.Log)
+	// nil can't pass 2C internalChurn 1094 "not an int"
+	// cmd := logEntry{lastIndex, rf.CurrnetTerm, nil}
+	cmd := logEntry{lastIndex, rf.CurrnetTerm, 0}
+
+	rf.Log = append(rf.Log, cmd)
+}
+
 func (rf *Raft) apply(applyCh chan ApplyMsg) {
 	commitIndex, lastApplied := 0, 0
 	rf.applyCond.L.Lock()
-	for {
+	for !rf.killed() {
 		rf.applyCond.Wait()
 
 		DPrintf("[%d] apply wake up\n", rf.me)
@@ -79,7 +91,7 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 		commitIndex, lastApplied = rf.commitIndex, rf.lastApplied
 
 		DPrintf("[%d] commitIndex = %d lastApplied = %d\n", rf.me, commitIndex, lastApplied)
-		toApply := rf.log[lastApplied+1 : commitIndex+1]
+		toApply := rf.Log[lastApplied+1 : commitIndex+1]
 		toApplyCopy := make([]logEntry, len(toApply))
 		copy(toApplyCopy, toApply)
 		DPrintf("[%d] toApply: %v\n", rf.me, toApplyCopy)
@@ -97,27 +109,30 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 }
 
 func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) {
-	args.Term = rf.currnetTerm
+	args.Term = rf.CurrnetTerm
 	args.LeaderId = rf.me
-	args.PrevLogIndex = rf.log[nextIndex-1].Index
-	args.PrevLogTerm = rf.log[nextIndex-1].Term
-	entry := rf.log[nextIndex:]
-	entryCopy := make([]logEntry, len(entry))
-	copy(entryCopy, entry)
-	// args.Entries = rf.log[nextIndex:]
-	args.Entries = entryCopy
+	args.PrevLogIndex = rf.Log[nextIndex-1].Index
+	args.PrevLogTerm = rf.Log[nextIndex-1].Term
+
+	// entry := rf.Log[nextIndex:]
+	// entryCopy := make([]logEntry, len(entry))
+	// copy(entryCopy, entry)
+	// args.Entries = entryCopy
+
+	args.Entries = rf.Log[nextIndex:]
+	// args.Entries = entry
 	args.LeaderCommit = rf.commitIndex
 }
 
 // func (rf *Raft) getMaxCommit() int {
 // 	nowIndex := rf.commitIndex + 1
-// 	for nowIndex < len(rf.log) {
+// 	for nowIndex < len(rf.Log) {
 // 		numsAgree := 1
 // 		for i := 0; i < len(rf.peers); i++ {
 // 			if i == rf.me {
 // 				continue
 // 			}
-// 			if rf.matchIndex[i] >= nowIndex && rf.log[nowIndex].Term == rf.currnetTerm {
+// 			if rf.matchIndex[i] >= nowIndex && rf.Log[nowIndex].Term == rf.CurrnetTerm {
 // 				numsAgree++
 // 			}
 // 		}
@@ -133,14 +148,14 @@ func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) {
 // rf have accquired rf.lock
 func (rf *Raft) getMaxCommit() int {
 	prevCommit := rf.commitIndex
-	nowIndex := len(rf.log) - 1
+	nowIndex := len(rf.Log) - 1
 	for ; nowIndex > prevCommit; nowIndex-- {
 		numsAgree := 1
 		for i := 0; i < len(rf.peers); i++ {
 			if i == rf.me {
 				continue
 			}
-			if rf.matchIndex[i] >= nowIndex && rf.log[nowIndex].Term == rf.currnetTerm {
+			if rf.matchIndex[i] >= nowIndex && rf.Log[nowIndex].Term == rf.CurrnetTerm {
 				numsAgree++
 			}
 		}

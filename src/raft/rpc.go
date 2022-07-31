@@ -38,6 +38,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	Xterm  int
+	Xindex int
 }
 
 //
@@ -50,33 +53,38 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	// DPrintf("after accquire lock")
-	reply.Term = rf.currnetTerm
+	reply.Term = rf.CurrnetTerm
 	reply.VoteGranted = false
 
-	DPrintf("[%d]:%d receive a vote request from [%d]:%d\n", rf.me, rf.currnetTerm, args.CandidateId, args.Term)
-	if args.Term < rf.currnetTerm {
+	DPrintf("[%d]:%d receive a vote request from [%d]:%d\n", rf.me, rf.CurrnetTerm, args.CandidateId, args.Term)
+	if args.Term < rf.CurrnetTerm {
 		return
 	}
 
-	if args.Term > rf.currnetTerm {
-		rf.currnetTerm = args.Term
+	if args.Term > rf.CurrnetTerm {
+		rf.CurrnetTerm = args.Term
 		rf.state = Follower
-		rf.votedFor = -1
+		rf.VotedFor = -1
 	}
 
-	lastIndex := len(rf.log) - 1
+	lastIndex := len(rf.Log) - 1
 
-	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
-		if rf.log[lastIndex].Term > args.LastLogTerm || (rf.log[lastIndex].Term == args.LastLogTerm &&
-			rf.log[lastIndex].Index > args.LastLogIndex) {
+	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateId {
+		if rf.Log[lastIndex].Term > args.LastLogTerm || (rf.Log[lastIndex].Term == args.LastLogTerm &&
+			rf.Log[lastIndex].Index > args.LastLogIndex) {
 			return
 		}
-		rf.votedFor = args.CandidateId
-		// reply.Term = rf.currnetTerm
+
+		rf.VotedFor = args.CandidateId
+		// reply.Term = rf.CurrnetTerm
 		reply.VoteGranted = true
+		DPrintf("rf.Log[lastIndex].Term %d args.LastLogTerm %d\n", rf.Log[lastIndex].Term, args.LastLogTerm)
+		DPrintf("rf.Log[lastIndex].Index %d args.LastLogIndex %d\n", rf.Log[lastIndex].Index, args.LastLogIndex)
+		DPrintf("[%d] vote for [%d] and now term %d\n", rf.me, rf.VotedFor, rf.CurrnetTerm)
+
 		rf.heartbeatTime = time.Now()
-		DPrintf("[%d] vote for [%d] and now term %d\n", rf.me, rf.votedFor, rf.currnetTerm)
 	}
+	rf.persist()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -84,55 +92,82 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	reply.Term = rf.currnetTerm
+	reply.Term = rf.CurrnetTerm
 	reply.Success = false
 
-	if args.Term < rf.currnetTerm {
+	if args.Term < rf.CurrnetTerm {
 		return
 	}
-	if args.Term > rf.currnetTerm {
-		// if args.Term > rf.currnetTerm {
+	if args.Term > rf.CurrnetTerm {
+		// if args.Term > rf.CurrnetTerm {
 		DPrintf("[%d] receive Append from [%d] get a higher term %d\n", rf.me, args.LeaderId, args.Term)
 		// }
 		// rf.becomeFollower(args.Term)
 		// reply.Success = true
 		// rf.heartbeatTime = time.Now()
-		// DPrintf("[%d] receive Append from [%d] at term %d\n", rf.me, args.LeaderId, rf.currnetTerm)
+		// DPrintf("[%d] receive Append from [%d] at term %d\n", rf.me, args.LeaderId, rf.CurrnetTerm)
 		rf.becomeFollower(args.Term)
 		reply.Term = args.Term
 	}
 
 	rf.heartbeatTime = time.Now()
-	lastlogIndex := len(rf.log) - 1
-	if args.PrevLogIndex > rf.log[lastlogIndex].Index || args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+	lastlogIndex := len(rf.Log) - 1
+	if args.PrevLogIndex > rf.Log[lastlogIndex].Index || args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
+
+		if args.PrevLogIndex > rf.Log[lastlogIndex].Index {
+			reply.Term = -1
+			reply.Xindex = rf.Log[lastlogIndex].Index
+		} else {
+			reply.Xterm = rf.Log[args.PrevLogIndex].Term
+			i := args.PrevLogIndex - 1
+			for i >= 0 {
+				if rf.Log[i].Term == rf.Log[args.PrevLogIndex].Term {
+					i--
+				} else {
+					break
+				}
+			}
+			reply.Xindex = i + 1
+		}
 
 		DPrintf("[%d] receive Append from [%d] don't match\n", rf.me, args.LeaderId)
 		DPrintf("[%d] prevIndex: %d lastlogIndex: %d  prevTerm %d log %v\n",
-			rf.me, args.PrevLogIndex, rf.log[lastlogIndex].Index, args.PrevLogTerm, rf.log)
+			rf.me, args.PrevLogIndex, rf.Log[lastlogIndex].Index, args.PrevLogTerm, rf.Log)
 		return
 	}
 
 	DPrintf("[%d] receive Append from [%d]  match\n", rf.me, args.LeaderId)
 	reply.Success = true
-	// EntriesCopy := make([]logEntry, len(args.Entries))
-	// copy(EntriesCopy, args.Entries)
+	EntriesCopy := make([]logEntry, len(args.Entries))
+	copy(EntriesCopy, args.Entries)
 
 	index := args.PrevLogIndex + 1
-	if rf.log[lastlogIndex].Index == args.PrevLogIndex || len(rf.log[index:]) <= len(args.Entries) {
-		rf.log = rf.log[:index]
-		rf.log = append(rf.log, args.Entries...)
+	if rf.Log[lastlogIndex].Index == args.PrevLogIndex || len(rf.Log[index:]) <= len(EntriesCopy) {
+		rf.Log = rf.Log[:index]
+		rf.Log = append(rf.Log, EntriesCopy...)
 	} else {
-		for _, entery := range args.Entries {
-			rf.log[index] = entery
+		for _, entery := range EntriesCopy {
+			rf.Log[index] = entery
 			index++
+		}
+
+		// no this may change the log commited
+		if index > rf.commitIndex {
+			DPrintf("commitIndex %d index %d len %d\n", rf.commitIndex, index, len(rf.Log))
+			rf.Log = rf.Log[:index]
 		}
 	}
 
+	DPrintf("[%d] receive Append from [%d]  match\n", rf.me, args.LeaderId)
+	DPrintf("now [%d] log %v\n", rf.me, rf.Log)
+
 	if args.LeaderCommit > rf.commitIndex {
 		DPrintf("[%d] update commit to %d\n", rf.me, args.LeaderCommit)
-		rf.commitIndex = min(args.LeaderCommit, rf.log[len(rf.log)-1].Index)
+		rf.commitIndex = min(args.LeaderCommit, rf.Log[len(rf.Log)-1].Index)
 		rf.applyCond.Signal()
 	}
+
+	rf.persist()
 	rf.heartbeatTime = time.Now()
 
 }
