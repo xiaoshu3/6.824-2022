@@ -191,9 +191,10 @@ func (cfg *config) ingestSnap(i int, snapshot []byte, index int) string {
 	}
 	r := bytes.NewBuffer(snapshot)
 	d := labgob.NewDecoder(r)
-	var lastIncludedIndex int
+	var lastIncludedIndex, lastIncludedTerm int
 	var xlog []interface{}
-	if d.Decode(&lastIncludedIndex) != nil ||
+	if d.Decode(&lastIncludedTerm) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
 		d.Decode(&xlog) != nil {
 		log.Fatalf("snapshot decode error")
 		return "snapshot Decode() error"
@@ -251,6 +252,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			if (m.CommandIndex+1)%SnapShotInterval == 0 {
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
+				e.Encode(m.SnapshotTerm)
 				e.Encode(m.CommandIndex)
 				var xlog []interface{}
 				for j := 0; j <= m.CommandIndex; j++ {

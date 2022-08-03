@@ -62,9 +62,9 @@ func (rf *Raft) becomeLeader() {
 	// rf.appandANoOpLog()
 	go rf.leaderSendAppendEntries(rf.CurrnetTerm)
 
-	lenLog := len(rf.Log)
+	lastindex := rf.getLastIndex()
 	for i := 0; i < len(rf.nextIndex); i++ {
-		rf.nextIndex[i] = lenLog
+		rf.nextIndex[i] = lastindex + 1
 		rf.matchIndex[i] = 0
 	}
 }
@@ -80,18 +80,22 @@ func (rf *Raft) appandANoOpLog() {
 	rf.Log = append(rf.Log, cmd)
 }
 
-func (rf *Raft) apply(applyCh chan ApplyMsg) {
+func (rf *Raft) apply() {
 	commitIndex, lastApplied := 0, 0
 	rf.applyCond.L.Lock()
-	for !rf.killed() {
+	defer rf.applyCond.L.Unlock()
+	for {
 		rf.applyCond.Wait()
-
+		if rf.killed() {
+			return
+		}
 		DPrintf("[%d] apply wake up\n", rf.me)
 		rf.mu.Lock()
 		commitIndex, lastApplied = rf.commitIndex, rf.lastApplied
 
-		DPrintf("[%d] commitIndex = %d lastApplied = %d\n", rf.me, commitIndex, lastApplied)
-		toApply := rf.Log[lastApplied+1 : commitIndex+1]
+		DPrintf("[%d] commitIndex = %d lastApplied = %d lastIncludeIndex = %d\n", rf.me, commitIndex, lastApplied, rf.LastIncludedIndex)
+
+		toApply := rf.Log[rf.getRelativelyIndex(lastApplied)+1 : rf.getRelativelyIndex(commitIndex)+1]
 		toApplyCopy := make([]logEntry, len(toApply))
 		copy(toApplyCopy, toApply)
 		DPrintf("[%d] toApply: %v\n", rf.me, toApplyCopy)
@@ -99,8 +103,8 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 		rf.mu.Unlock()
 
 		for _, cmd := range toApplyCopy {
-			oneApplyMsg := ApplyMsg{true, cmd.Command, cmd.Index, false, nil, 0, 0}
-			applyCh <- oneApplyMsg
+			oneApplyMsg := ApplyMsg{true, cmd.Command, cmd.Index, false, nil, cmd.Term, 0}
+			rf.applyCh <- oneApplyMsg
 
 			DPrintf("[%d] ApplyMsg %v send\n", rf.me, oneApplyMsg)
 		}
@@ -108,20 +112,25 @@ func (rf *Raft) apply(applyCh chan ApplyMsg) {
 
 }
 
-func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) {
+func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) bool {
+	relativeIndex := rf.getRelativelyIndex(nextIndex)
+	if relativeIndex < 0 {
+		DPrintf("relativeIndex < 0 nextIndex = %d  lastIncludeIndex = %d\n", nextIndex, rf.LastIncludedIndex)
+		return false
+	} else if relativeIndex == 0 {
+		args.PrevLogIndex = rf.LastIncludedIndex
+		args.PrevLogTerm = rf.LastIncludedTerm
+	} else {
+		args.PrevLogIndex = rf.Log[relativeIndex-1].Index
+		args.PrevLogTerm = rf.Log[relativeIndex-1].Term
+	}
+
 	args.Term = rf.CurrnetTerm
 	args.LeaderId = rf.me
-	args.PrevLogIndex = rf.Log[nextIndex-1].Index
-	args.PrevLogTerm = rf.Log[nextIndex-1].Term
-
-	// entry := rf.Log[nextIndex:]
-	// entryCopy := make([]logEntry, len(entry))
-	// copy(entryCopy, entry)
-	// args.Entries = entryCopy
-
-	args.Entries = rf.Log[nextIndex:]
-	// args.Entries = entry
 	args.LeaderCommit = rf.commitIndex
+
+	args.Entries = rf.Log[relativeIndex:]
+	return true
 }
 
 // func (rf *Raft) getMaxCommit() int {
@@ -148,20 +157,49 @@ func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) {
 // rf have accquired rf.lock
 func (rf *Raft) getMaxCommit() int {
 	prevCommit := rf.commitIndex
-	nowIndex := len(rf.Log) - 1
+	nowIndex := rf.getLastIndex()
 	for ; nowIndex > prevCommit; nowIndex-- {
 		numsAgree := 1
 		for i := 0; i < len(rf.peers); i++ {
 			if i == rf.me {
 				continue
 			}
-			if rf.matchIndex[i] >= nowIndex && rf.Log[nowIndex].Term == rf.CurrnetTerm {
+
+			if nowIndex < rf.LastIncludedIndex {
+				DPrintf("[%d] nowIndex = %d commitIndex = %d lastIncludeIndex = %d lastIndex = %d\n", rf.me, nowIndex, rf.commitIndex, rf.LastIncludedIndex, rf.getLastIndex())
+			}
+			if rf.matchIndex[i] >= nowIndex && rf.Log[rf.getRelativelyIndex(nowIndex)].Term == rf.CurrnetTerm {
 				numsAgree++
 			}
+
+			// if rf.matchIndex[i] >= nowIndex {
+
+			// 	if nowIndex < rf.LastIncludedIndex {
+			// 		DPrintf("[%d] nowIndex = %d commitIndex = %d lastIncludeIndex = %d\n", rf.me, nowIndex, rf.commitIndex, rf.LastIncludedIndex)
+			// 	}
+			// 	term := 0
+			// 	if nowIndex == rf.LastIncludedIndex {
+			// 		term = rf.LastIncludedTerm
+			// 	} else {
+			// 		term = rf.Log[rf.getRelativelyIndex(nowIndex)].Term
+			// 	}
+
+			// 	if term == rf.CurrnetTerm {
+			// 		numsAgree++
+			// 	}
+			// }
 		}
 		if numsAgree > len(rf.peers)/2 {
 			break
 		}
 	}
 	return nowIndex
+}
+
+func (rf *Raft) getRelativelyIndex(index int) int {
+	return index - rf.LastIncludedIndex - 1
+}
+
+func (rf *Raft) getLastIndex() int {
+	return rf.LastIncludedIndex + len(rf.Log)
 }
