@@ -1,8 +1,0 @@
-grep: test-*.log: No such file or directory
-[1;32mDone 001/100; 1 ok, 0 failed
-[0m[1;32mDone 002/100; 2 ok, 0 failed
-[0m[1;32mDone 003/100; 3 ok, 0 failed
-[0m[1;32mDone 004/100; 4 ok, 0 failed
-[0m[1;32mDone 005/100; 5 ok, 0 failed
-[0m[1;32mDone 006/100; 6 ok, 0 failed
-[0m
