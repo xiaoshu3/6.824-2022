@@ -216,9 +216,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	}
 
 	tailIndex := rf.getRelativelyIndex(index)
-	if rf.Log[tailIndex].Index != index {
-		DPrintf("index count error\n")
-	}
+	// if rf.Log[tailIndex].Index != index {
+	// 	DPrintf("index count error\n")
+	// }
 	rf.LastIncludedTerm = rf.Log[tailIndex].Term
 	rf.LastIncludedIndex = index
 	rf.persister.SaveSnapshotState(snapshot)
@@ -330,7 +330,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 
-	// kill aply goroutine
+	// kill apply goroutine
 	rf.applyCond.Signal()
 }
 
@@ -430,7 +430,7 @@ func (rf *Raft) sendInstallSnapshotRpc(server int) {
 	DPrintf("[%d] send a snapshop rpc to [%d]\n", rf.me, server)
 	ok := rf.sendInstallSnapshot(server, &args, &reply)
 	for !ok {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.IsRpcExpired(Leader, leaderTerm) {
@@ -444,6 +444,7 @@ func (rf *Raft) sendInstallSnapshotRpc(server int) {
 		// }
 		args = InstallSnapshotArgs{leaderTerm, leaderId, rf.LastIncludedIndex, rf.LastIncludedTerm, rf.persister.ReadSnapshot()}
 		reply = InstallSnapshotReply{}
+		lastIncludedIndex = rf.LastIncludedIndex
 		rf.mu.Unlock()
 		DPrintf("[%d] send a snapshop rpc to [%d] again \n", rf.me, server)
 		ok = rf.sendInstallSnapshot(server, &args, &reply)
@@ -464,12 +465,12 @@ func (rf *Raft) sendInstallSnapshotRpc(server int) {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		electionTimeOut := rand.Intn(200) + 500
+		electionTimeOut := rand.Intn(150) + 300
 		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
 
 		rf.mu.Lock()
 		if rf.state != Leader {
-			if time.Since(rf.heartbeatTime).Milliseconds() >= int64(electionTimeOut) {
+			if time.Since(rf.heartbeatTime).Milliseconds() >= int64(electionTimeOut) && !rf.killed() {
 				rf.becomeCandidate()
 				rf.persist()
 				DPrintf("[%d] attemping election at term %d\n ", rf.me, rf.CurrnetTerm)
@@ -482,7 +483,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) leaderSendAppendEntries(leaderTerm int) {
-	heartBeatTimeOut := 200
+	heartBeatTimeOut := 100
 	for !rf.killed() {
 
 		leaderId := rf.me
@@ -499,7 +500,7 @@ func (rf *Raft) leaderSendAppendEntries(leaderTerm int) {
 				rf.mu.Lock()
 
 				// maybe now rf is'not leader and it's nextIndex changed
-				if rf.IsRpcExpired(Leader, leaderTerm) {
+				if rf.IsRpcExpired(Leader, leaderTerm) || rf.killed() {
 					DPrintf("[%d] find it is not leader\n", rf.me)
 					rf.mu.Unlock()
 					return
@@ -530,7 +531,7 @@ func (rf *Raft) leaderSendAppendEntries(leaderTerm int) {
 
 					if !ok {
 						DPrintf("[%d] send append to [%d] failed\n", rf.me, server)
-						time.Sleep(10 * time.Millisecond)
+						time.Sleep(30 * time.Millisecond)
 						reply = AppendEntriesReply{}
 						ok = rf.sendAppendEntries(server, &args, &reply)
 						continue

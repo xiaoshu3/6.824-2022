@@ -198,16 +198,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	DPrintf("[%d] receive Append from [%d]  match\n", rf.me, args.LeaderId)
 	reply.Success = true
-	EntriesCopy := make([]logEntry, len(args.Entries))
-	copy(EntriesCopy, args.Entries)
+	// EntriesCopy := make([]logEntry, len(args.Entries))
+	// copy(EntriesCopy, args.Entries)
 
 	index := args.PrevLogIndex + 1
 	relativeIndex := rf.getRelativelyIndex(index)
-	if len(rf.Log[relativeIndex:]) <= len(EntriesCopy) {
+	if len(rf.Log[relativeIndex:]) <= len(args.Entries) {
 		rf.Log = rf.Log[:relativeIndex]
-		rf.Log = append(rf.Log, EntriesCopy...)
+		rf.Log = append(rf.Log, args.Entries...)
 	} else {
-		for _, entery := range EntriesCopy {
+		for _, entery := range args.Entries {
 			rf.Log[rf.getRelativelyIndex(index)] = entery
 			index++
 		}

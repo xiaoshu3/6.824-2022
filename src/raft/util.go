@@ -129,7 +129,11 @@ func (rf *Raft) getAppendArgs(nextIndex int, args *AppendEntriesArgs) bool {
 	args.LeaderId = rf.me
 	args.LeaderCommit = rf.commitIndex
 
-	args.Entries = rf.Log[relativeIndex:]
+	entery := rf.Log[relativeIndex:]
+	enteryCopy := make([]logEntry, len(entery))
+	copy(enteryCopy, entery)
+
+	args.Entries = enteryCopy
 	return true
 }
 
